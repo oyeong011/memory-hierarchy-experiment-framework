@@ -1,0 +1,19 @@
+bin/
+results/
+plots/
+scripts/__pycache__/
+*.pyc
+*.o
+
+# Local benchmark binaries built in the repo root
+cpu_thermal_bench
+mem_bench
+memory_bench
+memory_bw_saturation
+vm_experiment
+
+# Large local downloads
+*.deb
+
+# Local Codex marker file
+.codex
