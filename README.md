@@ -10,59 +10,174 @@ This project provides a reproducible Linux benchmarking workflow for studying ca
 
 ```text
 /project
+  Makefile
+  requirements.txt
   /src
-    memory_access_bench.c
-    matrix_bench.c
-    virtual_memory_bench.c
+    bench_util.h
+    pointer_chase.c
+    stream_lite.c
+    stride_access.c
+    row_col_traversal.c
+    matmul_tiled.c
   /scripts
-    build_benchmarks.sh
-    run_experiments.sh
-    process_results.py
+    collect_bench_only.sh
+    collect_perf.sh
+    parse_perf.py
+    plot_results.py
+    setup_tmux_current_session.sh
+    setup_tmux_workspace.sh
+  /tests
+    smoke_workflow.sh
+  /docs
+    perf_workflow.md
+    reproducibility.md
+  /prompts
+  /report
+    final_report.md
+    /figures
   /results
+    /raw
+    /processed
   /plots
+  /wiki
+```
+
+## Minimal Memory Pattern Suite
+
+For the current Project 1 workflow, the primary benchmark executables are:
+
+- `bin/pointer_chase`
+- `bin/stream_lite`
+- `bin/stride_access`
+- `bin/row_col_traversal`
+- optional: `bin/matmul_tiled`
+
+Build them with:
+
+```bash
+make
+```
+
+Collect raw `perf` results:
+
+```bash
+./scripts/collect_perf.sh
+```
+
+If hardware PMU events are unavailable on the machine, the collector will keep
+running with software events such as `task-clock` and `page-faults`, while
+leaving unsupported hardware-counter columns empty.
+Each invocation writes into its own run directory under `results/raw/`.
+
+Parse raw logs into a single CSV:
+
+```bash
+python3 ./scripts/parse_perf.py \
+  --manifest results/raw/<run-id>/manifest.csv \
+  --output results/processed/perf_results.csv
+```
+
+If `perf` is blocked on the machine, collect benchmark-only runtime data:
+
+```bash
+./scripts/collect_bench_only.sh
+```
+
+Generate plots:
+
+```bash
+python3 -m pip install --user -r requirements.txt
+python3 ./scripts/plot_results.py \
+  --input results/processed/perf_results.csv \
+  --plots-dir plots
 ```
 
 ## Reproducible Workflow
 
-Build:
+Build the benchmark suite:
 
 ```bash
-./scripts/build_benchmarks.sh
+make
 ```
 
-Run the full sweep:
+Run a `perf` sweep into a fresh per-run directory:
 
 ```bash
-./scripts/run_experiments.sh
+./scripts/collect_perf.sh
 ```
 
-Post-process CSV files and generate plots:
+Parse one manifest into a flat CSV:
 
 ```bash
-python3 ./scripts/process_results.py --results-dir results --plots-dir plots
+python3 ./scripts/parse_perf.py \
+  --manifest results/raw/<run-id>/manifest.csv \
+  --output results/processed/perf_results.csv
 ```
 
-For reproducibility:
+Generate plots and derived metrics:
 
+```bash
+python3 ./scripts/plot_results.py \
+  --input results/processed/perf_results.csv \
+  --plots-dir plots \
+  --derived-output results/processed/perf_results_derived.csv
+```
+
+If hardware counters are unavailable on the current machine, fall back to:
+
+```bash
+./scripts/collect_bench_only.sh
+```
+
+For reproducibility, also see [`docs/reproducibility.md`](docs/reproducibility.md).
+
+- Prefer one fresh run directory per sweep instead of reusing a shared manifest.
 - Keep the machine idle during runs.
 - Fix CPU frequency if possible and avoid background jobs.
 - Use the same compiler and flags across runs.
-- Use fixed random seeds already built into the scripts.
 - Repeat each sweep on the same kernel and hardware configuration when comparing datasets.
 - Ensure `perf` is usable for the current user. On many Ubuntu systems you may need to lower `kernel.perf_event_paranoid`, for example `sudo sysctl kernel.perf_event_paranoid=1`.
 
+## Smoke Test
+
+Run the lightweight verification script when you want a fast check that the
+benchmarks, parser, and plotting code still work together:
+
+```bash
+./tests/smoke_workflow.sh
+```
+
+The smoke test rebuilds the binaries, runs a tiny case for each benchmark,
+validates the one-line CSV output, parses a sample `perf` manifest, and
+renders plots from the checked-in sample results.
+
 ## perf Events Collected
 
-The automation script records:
+The automation script probes event support and then records the subset available
+on the current machine.
+
+Preferred hardware events:
 
 - `cycles`
 - `instructions`
 - `cache-references`
 - `cache-misses`
-- `page-faults`
+- `branch-misses`
+- `L1-dcache-loads`
+- `L1-dcache-load-misses`
+- `LLC-loads`
+- `LLC-load-misses`
 - `dTLB-load-misses`
 
-The parser stores them in structured CSV files under `results/`.
+Software fallback events:
+
+- `task-clock`
+- `cpu-clock`
+- `page-faults`
+- `context-switches`
+- `cpu-migrations`
+
+The parser stores them in structured CSV files under `results/processed/`.
 
 ## Interpretation Guide
 
@@ -76,12 +191,27 @@ When runtime or cache miss rate changes sharply as array size increases, that us
 
 ### TLB Behavior
 
-The virtual memory benchmark touches one location per page, so it suppresses cache-line locality and emphasizes translation overhead. Random page order should increase `dTLB-load-misses` versus sequential page order. Larger memory sizes also increase page-walk pressure once the active page footprint exceeds TLB reach.
+The current minimal suite does not include a dedicated page-walk benchmark, so
+TLB interpretation is opportunistic rather than central. If `dTLB-load-misses`
+is available, wider strides and larger working sets can still hint at
+translation pressure, but those signals should be described conservatively.
 
 ### Blocking Effectiveness
 
-In matrix multiplication, loop reordering improves reuse by traversing rows of `B` and `C` more cache-friendly than the naive `i-j-k` order. Blocking goes further by keeping submatrices hot in cache. The best block size is usually the one that fits the relevant cache level without causing excessive loop overhead; it should reduce time and often improve IPC.
+In the optional `matmul_tiled` benchmark, blocking keeps submatrices hot in
+cache for longer than an untiled traversal. The best tile size is usually the
+one that improves reuse without paying too much loop overhead, so the primary
+signal is the tile-size versus performance curve rather than one absolute
+"best" number.
 
 ## CV Description
 
 Built an automated Linux benchmarking framework in C, Bash, and Python to study memory hierarchy behavior using `perf`. Designed reproducible experiments for sequential, strided, random, matrix-multiplication, and virtual-memory access patterns; automated parameter sweeps up to 1 GB working sets; collected structured hardware-counter data; and produced analysis pipelines for cache miss rate, IPC, TLB behavior, and blocking efficiency.
+
+## Project 2 Wiki
+
+Project 2 starts in `wiki/`:
+
+- `wiki/README.md` for the paper taxonomy and reading order
+- `wiki/reproducibility-map.md` for a paper-to-reproduction map
+- `wiki/scaled-repro-plan.md` for the 2-week scaled reproduction plan
